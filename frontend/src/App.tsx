@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
 import { Activity, Users, Bus } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -44,6 +44,32 @@ const createPassengerPingIcon = () => {
 const passengerPingIcon = createPassengerPingIcon();
 const TRANSIT_HUB_COORDS: [number, number] = [12.9784, 77.6408];
 
+// Map Event Listener Component
+const MapClickHandler = () => {
+  useMapEvents({
+    click: async (e) => {
+      const { lat, lng } = e.latlng;
+
+      try {
+        await fetch('http://localhost:8000/api/commuter-request', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            drop_lat: lat,
+            drop_lng: lng,
+            passenger_name: 'Manual Operator Drop'
+          })
+        });
+      } catch (err) {
+        console.error("Failed to post manual commuter request", err);
+      }
+    }
+  });
+  return null;
+};
+
 function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [activePassengers, setActivePassengers] = useState(0);
@@ -80,7 +106,7 @@ function App() {
           if (data.activePassengers) setActivePassengers(data.activePassengers);
           if (data.fleetCounters) setFleetCounters(data.fleetCounters);
 
-          if (data.new_passenger && !isStreamPausedRef.current) {
+          if (data.new_passenger && (!isStreamPausedRef.current || data.new_passenger.source === 'manual')) {
             setPassengerPings(prev => {
               // Keep only the last 50 pings to avoid overwhelming the map
               const updated = [...prev, data.new_passenger];
@@ -126,6 +152,22 @@ function App() {
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Time formatter for the ticker
+  const formatRelativeTime = (isoString: string) => {
+    const msPerMinute = 60 * 1000;
+    const msPerHour = msPerMinute * 60;
+
+    const elapsed = Date.now() - new Date(isoString).getTime();
+
+    if (elapsed < msPerMinute) {
+       return `${Math.round(elapsed/1000)}s ago`;
+    }
+    else if (elapsed < msPerHour) {
+       return `${Math.round(elapsed/msPerMinute)}m ago`;
+    }
+    return `${Math.round(elapsed/msPerHour )}h ago`;
+  };
 
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-200 overflow-hidden font-sans">
@@ -180,6 +222,43 @@ function App() {
         </div>
       </header>
 
+      <div className="flex flex-1 overflow-hidden">
+        {/* Live Request Drawer (Left Sidebar) */}
+        <aside className="w-80 flex-none bg-slate-900 border-r border-slate-800 flex flex-col z-10 shadow-[4px_0_24px_rgba(0,0,0,0.5)]">
+          <div className="p-4 border-b border-slate-800 bg-slate-800/50">
+            <h2 className="text-sm font-bold tracking-widest text-slate-400 uppercase">Live Request Drawer</h2>
+            <p className="text-xs text-slate-500 mt-1">Real-time incoming commuter pings</p>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-2">
+            {[...passengerPings].reverse().map((ping, idx) => (
+              <div
+                key={`${ping.passenger_id}-${idx}`}
+                className="p-3 bg-slate-800/80 border border-slate-700 rounded shadow-sm animate-ping-entry flex flex-col"
+              >
+                <div className="flex justify-between items-center mb-1">
+                  <span className="text-sm font-bold text-slate-200">
+                    {ping.passenger_name || `Rider #${ping.passenger_id.slice(0, 4)}`}
+                  </span>
+                  <span className="text-xs text-slate-400 font-mono">
+                    {formatRelativeTime(ping.timestamp)}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-500 flex justify-between">
+                  <span>requested drop</span>
+                  <span className={ping.source === 'manual' ? 'text-blue-400 font-bold' : 'text-emerald-500'}>
+                    {ping.source === 'manual' ? 'Manual Ping' : 'Auto Stream'}
+                  </span>
+                </div>
+              </div>
+            ))}
+            {passengerPings.length === 0 && (
+              <div className="text-center p-8 text-slate-600 text-sm italic">
+                Waiting for incoming requests...
+              </div>
+            )}
+          </div>
+        </aside>
+
       {/* Operations Dashboard Canvas */}
       <main className="flex-1 relative">
         <MapContainer
@@ -188,6 +267,7 @@ function App() {
           zoomControl={false}
           style={{ width: '100%', height: '100%', background: '#020617' }} // bg-slate-950
         >
+          <MapClickHandler />
           {/* CartoDB Dark Matter tiles */}
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
@@ -216,6 +296,7 @@ function App() {
           ))}
         </MapContainer>
       </main>
+      </div>
     </div>
   );
 }

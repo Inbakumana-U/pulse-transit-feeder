@@ -3,11 +3,26 @@ import json
 from datetime import datetime, timezone
 import random
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Store connected clients
 clients = set()
+
+class CommuterRequest(BaseModel):
+    drop_lat: float
+    drop_lng: float
+    passenger_name: str
 
 # Example transit hub coordinates for later reference in frontend
 TRANSIT_HUB = [12.9784, 77.6408]
@@ -69,10 +84,40 @@ async def websocket_endpoint(websocket: WebSocket):
             # Keep connection open and wait for client to disconnect
             await websocket.receive_text()
     except WebSocketDisconnect:
-        clients.remove(websocket)
+        clients.discard(websocket)
     except Exception as e:
         print(f"Connection error: {e}")
         clients.discard(websocket)
+
+@app.post("/api/commuter-request")
+async def create_commuter_request(req: CommuterRequest):
+    passenger_data = {
+        "type": "passenger_ping",
+        "passenger_id": str(uuid.uuid4()),
+        "lat": req.drop_lat,
+        "lng": req.drop_lng,
+        "passenger_name": req.passenger_name,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": "WAITING_FOR_MATCH",
+        "source": "manual"
+    }
+
+    update_data = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "new_passenger": passenger_data
+    }
+
+    message = json.dumps(update_data)
+
+    # Broadcast to all connected clients
+    for client in list(clients):
+        try:
+            await client.send_text(message)
+        except Exception as e:
+            print(f"Error broadcasting manual passenger to client: {e}")
+            clients.remove(client)
+
+    return {"status": "success", "passenger_id": passenger_data["passenger_id"]}
 
 @app.get("/")
 def read_root():
