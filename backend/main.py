@@ -12,6 +12,9 @@ clients = set()
 # Example transit hub coordinates for later reference in frontend
 TRANSIT_HUB = [12.9784, 77.6408]
 
+import uuid
+import math
+
 async def broadcast_updates():
     while True:
         if clients:
@@ -21,6 +24,25 @@ async def broadcast_updates():
                 "activePassengers": random.randint(1500, 3000),
                 "fleetCounters": random.randint(80, 150),
             }
+
+            # Generate new passenger request
+            # 2 to 5 km radius, roughly 1 deg lat/lng = 111 km
+            # so 2 to 5 km = 0.018 to 0.045 degrees
+            distance_deg = random.uniform(0.018, 0.045)
+            angle = random.uniform(0, 2 * math.pi)
+            lat = TRANSIT_HUB[0] + distance_deg * math.cos(angle)
+            lng = TRANSIT_HUB[1] + distance_deg * math.sin(angle)
+
+            passenger_data = {
+                "type": "passenger_ping",
+                "passenger_id": str(uuid.uuid4()),
+                "lat": lat,
+                "lng": lng,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "status": "WAITING_FOR_MATCH"
+            }
+            update_data["new_passenger"] = passenger_data
+
             message = json.dumps(update_data)
 
             # Broadcast to all connected clients
@@ -31,8 +53,8 @@ async def broadcast_updates():
                     print(f"Error broadcasting to client: {e}")
                     clients.remove(client)
 
-        # Broadcast every 2 seconds
-        await asyncio.sleep(2)
+        # Broadcast every 1.5 to 3 seconds
+        await asyncio.sleep(random.uniform(1.5, 3.0))
 
 @app.on_event("startup")
 async def startup_event():

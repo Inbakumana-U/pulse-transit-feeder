@@ -28,6 +28,20 @@ const createPulseIcon = () => {
 };
 
 const pulseIcon = createPulseIcon();
+
+// Custom icon for passenger pings with entry pulse animation
+const createPassengerPingIcon = () => {
+  return L.divIcon({
+    className: 'custom-div-icon animate-ping-entry',
+    html: `
+      <div class="w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_10px_rgba(52,211,153,0.8)] border border-emerald-200"></div>
+    `,
+    iconSize: [12, 12],
+    iconAnchor: [6, 6],
+  });
+};
+
+const passengerPingIcon = createPassengerPingIcon();
 const TRANSIT_HUB_COORDS: [number, number] = [12.9784, 77.6408];
 
 function App() {
@@ -35,7 +49,17 @@ function App() {
   const [activePassengers, setActivePassengers] = useState(0);
   const [fleetCounters, setFleetCounters] = useState(0);
   const [time, setTime] = useState({ local: '', utc: '' });
+
+  // New passenger stream state
+  const [passengerPings, setPassengerPings] = useState<any[]>([]);
+  const [isStreamPaused, setIsStreamPaused] = useState(false);
+  const isStreamPausedRef = useRef(isStreamPaused);
+
   const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    isStreamPausedRef.current = isStreamPaused;
+  }, [isStreamPaused]);
 
   // Auto-reconnecting WebSocket
   useEffect(() => {
@@ -55,6 +79,15 @@ function App() {
           const data = JSON.parse(event.data);
           if (data.activePassengers) setActivePassengers(data.activePassengers);
           if (data.fleetCounters) setFleetCounters(data.fleetCounters);
+
+          if (data.new_passenger && !isStreamPausedRef.current) {
+            setPassengerPings(prev => {
+              // Keep only the last 50 pings to avoid overwhelming the map
+              const updated = [...prev, data.new_passenger];
+              if (updated.length > 50) return updated.slice(updated.length - 50);
+              return updated;
+            });
+          }
         } catch (err) {
           console.error("Failed to parse websocket message", err);
         }
@@ -125,6 +158,18 @@ function App() {
             </div>
           </div>
 
+          {/* Pause/Resume Button */}
+          <button
+            onClick={() => setIsStreamPaused(!isStreamPaused)}
+            className={`px-3 py-1 text-xs font-bold rounded border transition-colors ${
+              isStreamPaused
+                ? 'bg-amber-900/50 border-amber-700 text-amber-500 hover:bg-amber-900'
+                : 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            {isStreamPaused ? 'Resume Live Inflow' : 'Pause Live Inflow'}
+          </button>
+
           {/* Connection Indicator */}
           <div className="flex items-center space-x-2 px-3 py-1 rounded bg-slate-800 border border-slate-700">
             <Activity size={16} className={isConnected ? "text-emerald-500 animate-pulse" : "text-amber-500"} />
@@ -154,6 +199,21 @@ function App() {
               <div className="text-sm text-slate-600">Active Node</div>
             </Popup>
           </Marker>
+
+          {/* Passenger Pings */}
+          {passengerPings.map(ping => (
+            <Marker
+              key={ping.passenger_id}
+              position={[ping.lat, ping.lng]}
+              icon={passengerPingIcon}
+            >
+              <Popup className="dark-popup">
+                <div className="font-bold text-slate-800">Passenger</div>
+                <div className="text-xs text-slate-500 font-mono">ID: {ping.passenger_id.slice(0,8)}...</div>
+                <div className="text-xs text-slate-600">Status: {ping.status}</div>
+              </Popup>
+            </Marker>
+          ))}
         </MapContainer>
       </main>
     </div>
