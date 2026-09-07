@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMapEvents, Polyline } from 'react-leaflet';
 import { Activity, Users, Bus } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -30,18 +30,19 @@ const createPulseIcon = () => {
 const pulseIcon = createPulseIcon();
 
 // Custom icon for passenger pings with entry pulse animation
-const createPassengerPingIcon = () => {
+const createPassengerPingIcon = (color: string) => {
+  // If allocated, we use the route color, else amber for waiting.
+  // Converting hex/string to inline style for the ping.
   return L.divIcon({
     className: 'custom-div-icon animate-ping-entry',
     html: `
-      <div class="w-3 h-3 bg-emerald-400 rounded-full shadow-[0_0_10px_rgba(52,211,153,0.8)] border border-emerald-200"></div>
+      <div style="background-color: ${color}; box-shadow: 0 0 10px ${color}80; border-color: ${color};"
+           class="w-3 h-3 rounded-full border"></div>
     `,
     iconSize: [12, 12],
     iconAnchor: [6, 6],
   });
 };
-
-const passengerPingIcon = createPassengerPingIcon();
 const TRANSIT_HUB_COORDS: [number, number] = [12.9784, 77.6408];
 
 // Map Event Listener Component
@@ -79,6 +80,7 @@ function App() {
   // New passenger stream state
   const [passengerPings, setPassengerPings] = useState<any[]>([]);
   const [isStreamPaused, setIsStreamPaused] = useState(false);
+  const [activeRoutes, setActiveRoutes] = useState<any[]>([]);
   const isStreamPausedRef = useRef(isStreamPaused);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -106,7 +108,29 @@ function App() {
           if (data.activePassengers) setActivePassengers(data.activePassengers);
           if (data.fleetCounters) setFleetCounters(data.fleetCounters);
 
-          if (data.new_passenger && (!isStreamPausedRef.current || data.new_passenger.source === 'manual')) {
+          if (data.type === "route_dispatch") {
+            setActiveRoutes(prev => {
+              // Append new routes, keep last 20 for performance
+              const updated = [...prev, ...data.routes];
+              if (updated.length > 20) return updated.slice(updated.length - 20);
+              return updated;
+            });
+
+            // Update passenger statuses based on dispatched routes
+            const allocatedPassengerMap = new Map();
+            data.routes.forEach((r: any) => {
+              r.passengers.forEach((pid: string) => {
+                allocatedPassengerMap.set(pid, r.color);
+              });
+            });
+
+            setPassengerPings(prev => prev.map(p => {
+              if (allocatedPassengerMap.has(p.passenger_id)) {
+                return { ...p, status: 'ALLOCATED', route_color: allocatedPassengerMap.get(p.passenger_id) };
+              }
+              return p;
+            }));
+          } else if (data.new_passenger && (!isStreamPausedRef.current || data.new_passenger.source === 'manual')) {
             setPassengerPings(prev => {
               // Keep only the last 50 pings to avoid overwhelming the map
               const updated = [...prev, data.new_passenger];
@@ -245,8 +269,11 @@ function App() {
                 </div>
                 <div className="text-xs text-slate-500 flex justify-between">
                   <span>requested drop</span>
-                  <span className={ping.source === 'manual' ? 'text-blue-400 font-bold' : 'text-emerald-500'}>
-                    {ping.source === 'manual' ? 'Manual Ping' : 'Auto Stream'}
+                  <span
+                    className="font-bold"
+                    style={{ color: ping.status === 'ALLOCATED' ? ping.route_color : '#f59e0b' }}
+                  >
+                    {ping.status === 'ALLOCATED' ? 'ALLOCATED' : 'WAITING'}
                   </span>
                 </div>
               </div>
@@ -280,12 +307,31 @@ function App() {
             </Popup>
           </Marker>
 
+          {/* Active Routes rendering */}
+          {activeRoutes.map(route => {
+            if (route.geometry && route.geometry.coordinates) {
+              // OSRM returns coordinates as [lng, lat], Leaflet expects [lat, lng]
+              const positions = route.geometry.coordinates.map((coord: [number, number]) => [coord[1], coord[0]]);
+              return (
+                <Polyline
+                  key={route.route_id}
+                  positions={positions}
+                  color={route.color}
+                  weight={5}
+                  opacity={0.8}
+                  className="animate-pulse" // Neon glow effect
+                />
+              );
+            }
+            return null;
+          })}
+
           {/* Passenger Pings */}
           {passengerPings.map(ping => (
             <Marker
               key={ping.passenger_id}
               position={[ping.lat, ping.lng]}
-              icon={passengerPingIcon}
+              icon={createPassengerPingIcon(ping.status === 'ALLOCATED' ? ping.route_color : '#f59e0b')} // amber-500 for waiting
             >
               <Popup className="dark-popup">
                 <div className="font-bold text-slate-800">Passenger</div>
