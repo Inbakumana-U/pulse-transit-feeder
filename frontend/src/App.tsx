@@ -81,6 +81,15 @@ function App() {
   const [passengerPings, setPassengerPings] = useState<any[]>([]);
   const [isStreamPaused, setIsStreamPaused] = useState(false);
   const [activeRoutes, setActiveRoutes] = useState<any[]>([]);
+
+  // HUD Metrics State
+  const [metrics, setMetrics] = useState({
+    vmt_saved_km: 0,
+    utilization_pct: 0,
+    avg_wait_sec: 0,
+    active_shuttles: [] as any[]
+  });
+
   const isStreamPausedRef = useRef(isStreamPaused);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -108,13 +117,28 @@ function App() {
           if (data.activePassengers) setActivePassengers(data.activePassengers);
           if (data.fleetCounters) setFleetCounters(data.fleetCounters);
 
-          if (data.type === "route_dispatch") {
+          if (data.type === "flush") {
+            setPassengerPings([]);
+            setActiveRoutes([]);
+            setMetrics({
+              vmt_saved_km: 0,
+              utilization_pct: 0,
+              avg_wait_sec: 0,
+              active_shuttles: []
+            });
+            setActivePassengers(0);
+            setFleetCounters(0);
+          } else if (data.type === "route_dispatch") {
             setActiveRoutes(prev => {
               // Append new routes, keep last 20 for performance
               const updated = [...prev, ...data.routes];
               if (updated.length > 20) return updated.slice(updated.length - 20);
               return updated;
             });
+
+            if (data.metrics) {
+              setMetrics(data.metrics);
+            }
 
             // Update passenger statuses based on dispatched routes
             const allocatedPassengerMap = new Map();
@@ -177,6 +201,14 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  const handleFlushStream = async () => {
+    try {
+      await fetch('http://localhost:8000/api/flush-stream', { method: 'POST' });
+    } catch (err) {
+      console.error("Failed to flush stream", err);
+    }
+  };
+
   // Time formatter for the ticker
   const formatRelativeTime = (isoString: string) => {
     const msPerMinute = 60 * 1000;
@@ -223,6 +255,14 @@ function App() {
               <span className="text-lg font-bold text-amber-400 tabular-nums">{fleetCounters.toLocaleString()}</span>
             </div>
           </div>
+
+          {/* Flush Control */}
+          <button
+            onClick={handleFlushStream}
+            className="px-3 py-1 text-xs font-bold rounded border bg-red-900/40 border-red-800 text-red-400 hover:bg-red-800 transition-colors"
+          >
+            Flush Active Stream
+          </button>
 
           {/* Pause/Resume Button */}
           <button
@@ -288,6 +328,67 @@ function App() {
 
       {/* Operations Dashboard Canvas */}
       <main className="flex-1 relative">
+        {/* Live Analytics Drawer (Floating HUD) */}
+        <div className="absolute top-4 right-4 z-[400] w-72 space-y-3 pointer-events-none">
+          {/* VMT Reduction */}
+          <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-3 rounded shadow-lg">
+            <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">Dynamic VMT Reduction</div>
+            <div className="text-xl font-bold text-emerald-400 tabular-nums">
+              {metrics.vmt_saved_km.toFixed(1)} <span className="text-sm font-normal text-slate-500">km saved</span>
+            </div>
+          </div>
+
+          {/* Fleet Utilization */}
+          <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-3 rounded shadow-lg">
+            <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">Active Fleet Utilization</div>
+            <div className="flex items-end space-x-2">
+              <div className="text-xl font-bold text-blue-400 tabular-nums">
+                {metrics.utilization_pct.toFixed(0)}%
+              </div>
+            </div>
+            {/* simple capacity bar */}
+            <div className="w-full bg-slate-800 h-1.5 mt-2 rounded overflow-hidden flex">
+              <div className="bg-blue-500 h-full transition-all duration-500" style={{ width: `${metrics.utilization_pct}%` }}></div>
+            </div>
+          </div>
+
+          {/* Average Wait Time */}
+          <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-3 rounded shadow-lg">
+            <div className="text-xs text-slate-400 uppercase tracking-wider mb-1">Average Wait Time</div>
+            <div className="text-xl font-bold text-amber-400 tabular-nums">
+              {metrics.avg_wait_sec < 60 ? `${Math.round(metrics.avg_wait_sec)}s` : `${(metrics.avg_wait_sec / 60).toFixed(1)}m`}
+            </div>
+          </div>
+
+          {/* Active Shuttle Manifest */}
+          {metrics.active_shuttles.length > 0 && (
+            <div className="bg-slate-900/90 backdrop-blur border border-slate-700 p-3 rounded shadow-lg">
+              <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">Active Shuttle Manifest ({metrics.active_shuttles.length})</div>
+              <div className="space-y-2 max-h-48 overflow-y-auto pointer-events-auto custom-scrollbar pr-1">
+                {metrics.active_shuttles.map((shuttle: any) => {
+                  const elapsed = (Date.now() - new Date(shuttle.start_time).getTime()) / 1000;
+                  const progressPct = Math.min(100, Math.max(0, (elapsed / shuttle.duration_sec) * 100));
+                  return (
+                    <div key={shuttle.id} className="bg-slate-800 rounded p-2 text-xs border border-slate-700">
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="font-mono text-slate-300">SH-{shuttle.id.slice(0,4).toUpperCase()}</span>
+                        <div className="flex items-center space-x-1">
+                          <span className="text-slate-400">{shuttle.filled_seats}/{shuttle.capacity}</span>
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: shuttle.color }}></div>
+                        </div>
+                      </div>
+                      {/* Circuit Progress Bar */}
+                      <div className="w-full bg-slate-900 h-1 mt-1 rounded overflow-hidden">
+                        <div className="h-full bg-slate-400 transition-all duration-1000 ease-linear" style={{ width: `${progressPct}%` }}></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
         <MapContainer
           center={TRANSIT_HUB_COORDS}
           zoom={13}
